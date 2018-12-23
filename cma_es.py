@@ -111,8 +111,10 @@ class Model(object):
             offset += o_size
 
 
-def play(env, model, n=1):
+def play(env, model, n, eval_flag):
     """Rollouts with the given model."""
+    if eval_flag:
+        n = 1
     rewards = []
     for _ in range(n):
         ob = env.reset()
@@ -123,6 +125,8 @@ def play(env, model, n=1):
             ob, reward, done, _ = env.step(action)
             ep_reward += reward
             if done:
+                if (not eval_flag) and (reward == -100.0):
+                    ep_reward += 100
                 rewards.append(ep_reward)
     return rewards
 
@@ -135,12 +139,9 @@ def rollout(config, worker_id, downstream_q, upstream_q):
     model = Model(config)
     try:
         while True:
-            params, ix = downstream_q.get()
+            params, ix, eval_flag = downstream_q.get()
             model.set_params(params)
-            if config.eval_flag:
-                rewards = play(env, model)
-            else:
-                rewards = play(env, model, config.repeat_per_solution)
+            rewards = play(env, model, config.repeat_per_solution, eval_flag)
             upstream_q.put((np.mean(rewards), ix))
     except TypeError:
         config.logger.info('Worker {} quits.'.format(worker_id))
@@ -151,12 +152,11 @@ def rollout(config, worker_id, downstream_q, upstream_q):
 def do_rollouts(workers, params, config, main_q, eval_flag=False):
     """Workers do rollouts."""
     total_rollouts = config.eval_rounds if eval_flag else config.population_size
-    config.eval_flag = eval_flag
     # distribute work
     cnt = 0
     while cnt < total_rollouts:
         for _, worker_q in workers:
-            worker_q.put((params[cnt], cnt))
+            worker_q.put((params[cnt], cnt, eval_flag))
             cnt += 1
             if cnt >= total_rollouts:
                 break
@@ -184,7 +184,7 @@ def test(config, workers, main_q, env):
     n = config.eval_rounds - config.n_video_episodes
     config.eval_rounds = n
     rewards = do_rollouts(workers, [params] * n, config, main_q, True).tolist()
-    rewards += play(env, model, config.n_video_episodes)
+    rewards += play(env, model, config.n_video_episodes, True)
     logger.info('TEST: r.len={}, r.mean={}, r.sd={}'.format(
         len(rewards), np.mean(rewards), np.std(rewards)))
 
